@@ -148,7 +148,7 @@ class Editor:
             return None, None
         if not read_word:
             return target, None
-        excerpt, _ = self._word(target, element, value, text) if element.CurrentControlType == EDIT else (None, None)
+        excerpt, _ = self._word(target, element, value, text)
         return target, excerpt
 
     def _word(self, target, element, value, text):
@@ -160,6 +160,12 @@ class Editor:
         caret = self._caret(element, text)
         if not caret or not self._editable(value, caret):
             return None, None
+        if element.CurrentControlType == DOCUMENT:
+            nearby = caret.Clone()
+            nearby.MoveEndpointByUnit(START, CHARACTER, -32)
+            nearby.MoveEndpointByUnit(END, CHARACTER, 1)
+            if not self._document_selection_allowed(nearby):
+                return None, None
         before = _surrounding(caret, START, -32)
         after = _surrounding(caret, END, 1)
         match = trailing_word(before, after)
@@ -272,6 +278,10 @@ class Editor:
             raise EditorError("The caret or selection moved. Capture it again or use Copy.")
         if windows.foreground() != target.window or windows.active_modifiers():
             raise EditorError("Return to the original editor and release any shortcut keys.")
+        if current.scope == "paragraph":
+            # UIA may include the separator before the following paragraph.
+            suffix = current.text[len(current.text.rstrip("\r\n")):]
+            replacement = replacement.rstrip("\r\n") + suffix
         if current.scope == "field" and value:
             value.SetValue(replacement)
             return

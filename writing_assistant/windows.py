@@ -135,6 +135,24 @@ def place_popup(window, anchor):
     set_pos(hwnd, -1, left, top, width, height, 0x10 | 0x40)
 
 
+class NoActivate:
+    """Allow mouse clicks on the popup without transferring the editor's input focus."""
+
+    def __init__(self, overlay):
+        self.hwnd = own_window(overlay)
+        self.callback = subclass_proc(self._message)
+        self.installed = set_subclass(self.hwnd, self.callback, 3, 0)
+
+    def _message(self, hwnd, message, wparam, lparam, _subclass, _data):
+        if message == 0x0021:  # WM_MOUSEACTIVATE
+            return 3  # MA_NOACTIVATE still delivers the click.
+        return next_subclass(hwnd, message, wparam, lparam)
+
+    def close(self):
+        if self.installed:
+            remove_subclass(self.hwnd, self.callback, 3)
+
+
 def native_password(hwnd):
     if not hwnd:
         return False
