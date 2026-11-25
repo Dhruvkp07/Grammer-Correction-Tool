@@ -24,6 +24,13 @@ class BrowserOverlayTests(unittest.TestCase):
             field = page.get_by_role("textbox")
             root = tk.Tk()
             app = WritingAssistant(root, background=True)
+            apply_results = []
+            submit = app.worker.submit
+            def tracked_submit(action, *args):
+                if action == "apply":
+                    apply_results.append(("apply", args[1].text, args[2]))
+                submit(action, *args)
+            app.worker.submit = tracked_submit
             try:
                 root.withdraw()
                 app.settings.automatic = True
@@ -33,6 +40,8 @@ class BrowserOverlayTests(unittest.TestCase):
                     deadline = time.monotonic() + 14
                     while time.monotonic() < deadline:
                         root.update()
+                        if app.inline_notice and app.inline_notice not in apply_results:
+                            apply_results.append(app.inline_notice)
                         if predicate():
                             return
                         page.wait_for_timeout(40)
@@ -43,7 +52,7 @@ class BrowserOverlayTests(unittest.TestCase):
                               f"class={element.CurrentClassName}, keyboard={element.CurrentHasKeyboardFocus}, "
                               f"password flag type={type(element.GetCurrentPropertyValueEx(30019, True))}, "
                               f"domFocus={field.evaluate('el => el === document.activeElement')}, name={element.CurrentName}, " 
-                              f"nativeTarget={editor._focus()}, status={app.ui_fault} {app.inline_notice}")
+                              f"text={field.inner_text()!r}, operations={apply_results}, status={app.ui_fault} {app.inline_notice}")
 
                 def click(button):
                     x = button.winfo_rootx() + button.winfo_width() // 2
