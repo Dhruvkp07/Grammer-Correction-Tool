@@ -88,9 +88,21 @@ class WindowsTests(unittest.TestCase):
         error, result = request("probe", True)
         self.assertEqual(error, "")
         _, word, candidate = result
-        if word is not None:
-            self.assertEqual((word.text, candidate), ("writng", "writing"))
+        self.assertIsNotNone(word, "Native edit did not expose a usable caret.")
+        self.assertEqual((word.text, candidate), ("writng", "writing"))
+        error, _ = request("apply", None, word, candidate, owner)
+        self.assertEqual(error, "")
 
+        def assert_corrected():
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                if control(3) == "I am writing now.":
+                    return
+                time.sleep(0.05)
+            self.assertEqual(control(3), "I am writing now.")
+
+        assert_corrected()
+        self.assertTrue(control(0))
         error, result = request("capture", 1, hwnd)
         self.assertEqual(error, "")
         _, excerpt = result
@@ -106,12 +118,7 @@ class WindowsTests(unittest.TestCase):
         self.assertEqual((excerpt.scope, excerpt.text), ("selection", "writng"))
         error, _ = request("apply", 2, excerpt, "writing", owner)
         self.assertEqual(error, "")
-        deadline = time.monotonic() + 3
-        while time.monotonic() < deadline:
-            if control(3) == "I am writing now.":
-                break
-            time.sleep(0.05)
-        self.assertEqual(control(3), "I am writing now.")
+        assert_corrected()
 
         self.assertTrue(control(2))
         error, result = request("probe", True)

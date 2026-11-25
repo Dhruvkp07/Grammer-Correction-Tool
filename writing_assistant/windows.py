@@ -2,6 +2,7 @@
 
 import ctypes as c
 import os
+import secrets
 import subprocess
 import sys
 from ctypes import wintypes as w
@@ -80,11 +81,12 @@ close_clipboard = bind(user, "CloseClipboard", w.BOOL)
 empty_clipboard = bind(user, "EmptyClipboard", w.BOOL)
 set_clipboard = bind(user, "SetClipboardData", w.HANDLE, w.UINT, w.HANDLE)
 clipboard_format = bind(user, "RegisterClipboardFormatW", w.UINT, w.LPCWSTR)
-clipboard_sequence = bind(user, "GetClipboardSequenceNumber", w.DWORD)
+get_clipboard = bind(user, "GetClipboardData", w.HANDLE, w.UINT)
 global_alloc = bind(kernel, "GlobalAlloc", w.HGLOBAL, w.UINT, c.c_size_t)
 global_lock = bind(kernel, "GlobalLock", c.c_void_p, w.HGLOBAL)
 global_unlock = bind(kernel, "GlobalUnlock", w.BOOL, w.HGLOBAL)
 global_free = bind(kernel, "GlobalFree", w.HGLOBAL, w.HGLOBAL)
+global_size = bind(kernel, "GlobalSize", c.c_size_t, w.HGLOBAL)
 local_free = bind(kernel, "LocalFree", w.HLOCAL, w.HLOCAL)
 create_mutex = bind(kernel, "CreateMutexW", w.HANDLE, c.c_void_p, w.BOOL, w.LPCWSTR)
 close_handle = bind(kernel, "CloseHandle", w.BOOL, w.HANDLE)
@@ -204,6 +206,9 @@ def _clipboard_data(format_id, data):
             global_free(handle)
 
 
+CLIPBOARD_MARKER = "WritingAssistant.ReplacementMarker"
+
+
 def copy_text(owner, text):
     if "\0" in text:
         raise ValueError("The text contains an unsupported character.")
@@ -216,10 +221,36 @@ def copy_text(owner, text):
         )]
         if not all(formats) or not empty_clipboard():
             raise c.WinError(c.get_last_error())
+        marker_format = clipboard_format(CLIPBOARD_MARKER)
+        if not marker_format:
+            raise c.WinError(c.get_last_error())
+        marker = secrets.token_bytes(16)
         for format_id in formats:
             _clipboard_data(format_id, bytes(4))
+        _clipboard_data(marker_format, marker)
         _clipboard_data(13, data)  # CF_UNICODETEXT
-        return clipboard_sequence()
+        return marker
+    finally:
+        close_clipboard()
+
+
+def clipboard_still_matches(owner, marker):
+    # Windows may generate additional text formats on close, changing the sequence number.
+    # Read only our private write marker, never the contents of an unrelated clipboard entry.
+    format_id = clipboard_format(CLIPBOARD_MARKER)
+    if not format_id or not open_clipboard(owner):
+        return False
+    try:
+        handle = get_clipboard(format_id)
+        if not handle or global_size(handle) < len(marker):
+            return False
+        pointer = global_lock(handle)
+        if not pointer:
+            return False
+        try:
+            return c.string_at(pointer, len(marker)) == marker
+        finally:
+            global_unlock(handle)
     finally:
         close_clipboard()
 

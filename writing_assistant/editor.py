@@ -52,11 +52,12 @@ def _surrounding(text_range, endpoint, count):
 
 class Editor:
     def __init__(self):
-        # comtypes initially initializes the importing thread with sys.coinit_flags.
+        # comtypes uses these flags for the first importing thread.
         sys.coinit_flags = 0
         import comtypes
         from comtypes.client import CreateObject, GetModule
 
+        comtypes.CoInitializeEx(0)  # The worker owns this MTA for its lifetime.
         self.com_error = comtypes.COMError
         path = Path(os.environ["SystemRoot"]) / "System32" / "UIAutomationCore.dll"
         self.types = GetModule(str(path))
@@ -254,7 +255,7 @@ class Editor:
             return
         if not text_range or not text:
             raise EditorError("This editor cannot apply the replacement. Use Copy.")
-        sequence = windows.copy_text(owner, replacement)
+        marker = windows.copy_text(owner, replacement)
         focused = self._focus()
         if not focused or focused[0].identity != target.identity or focused[0].window != target.window:
             raise EditorError("The active field changed. The replacement is available on the clipboard.")
@@ -264,8 +265,10 @@ class Editor:
                 or selected.GetText(len(current.text) + 1) != current.text):
             raise EditorError("This editor did not select the expected text. Use Copy.")
         focused = self._focus()
-        if (not focused or focused[0].identity != target.identity or focused[0].window != target.window
-                or windows.foreground() != target.window or windows.active_modifiers()
-                or windows.clipboard_sequence() != sequence):
-            raise EditorError("The editor or clipboard changed before paste. Use Copy.")
+        if (not focused or focused[0].identity != target.identity or focused[0].window != target.window):
+            raise EditorError("The focused field changed before paste. Use Copy.")
+        if not windows.clipboard_still_matches(owner, marker):
+            raise EditorError("The clipboard changed before paste. Use Copy.")
+        if windows.foreground() != target.window or windows.active_modifiers():
+            raise EditorError("Return to the original editor and release any shortcut keys.")
         windows.paste()
