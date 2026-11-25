@@ -133,3 +133,51 @@ class WindowsTests(unittest.TestCase):
         error, result = request("capture", 3, hwnd)
         self.assertTrue(error)
         self.assertIsNone(result)
+
+        # Click the visible Tk overlay through Windows, exercising focus, callbacks,
+        # UI Automation selection and insertion into another process together.
+        from writing_assistant.app import WritingAssistant
+
+        app = WritingAssistant(root, background=True)
+        self.addCleanup(app.hotkey.close)
+        self.addCleanup(app.tray.close)
+        self.addCleanup(app.overlay_guard.close)
+        root.withdraw()
+        app.settings.automatic = True
+        app.settings.spelling = True
+        self.assertTrue(control(0))
+        _, (target, word, candidate) = request("probe", True)
+
+        def click_and_expect(button, expected):
+            app._update_overlay()
+            root.update()
+            self.assertTrue(button.winfo_ismapped(), "Inline suggestion must be visible")
+            x = button.winfo_rootx() + button.winfo_width() // 2
+            y = button.winfo_rooty() + button.winfo_height() // 2
+            windows.user.SetCursorPos(x, y)
+            windows.user.mouse_event(2, 0, 0, 0, 0)
+            windows.user.mouse_event(4, 0, 0, 0, 0)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                root.update()
+                self.assertEqual(app.review.state(), "withdrawn")
+                if control(3) == expected and not app.pending_apply:
+                    return
+                time.sleep(0.02)
+            self.fail(f"Overlay click did not insert text. Status: {app.inline_notice}")
+
+        app.target, app.word = target, (word, candidate)
+        # Supply deterministic suggestions. The transport has its own response tests.
+        app.next_probe = float("inf")
+        click_and_expect(app.word_button, "I am writing now.")
+        self.assertTrue(control(0))
+        _, (paragraph, _) = request("paragraph")
+        app.auto_seen = paragraph
+        app.auto_result = (paragraph, "I am editing today.")
+        click_and_expect(app.preview, "I am editing today.")
+        self.assertTrue(control(0))
+        app.auto_seen = paragraph
+        app.auto_result = (paragraph, "I am editing today.")
+        app.variants = (("Friendly", "I am drafting a note."),)
+        app._update_overlay()
+        click_and_expect(app.choices.winfo_children()[0], "I am drafting a note.")

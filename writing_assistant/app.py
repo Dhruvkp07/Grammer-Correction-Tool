@@ -34,6 +34,8 @@ class WritingAssistant:
         self.auto_pending = False
         self.auto_busy = False
         self.auto_result = None
+        self.variants = ()
+        self.inline_notice = ""
         self.auto_queue = queue.SimpleQueue()
         self.target = None
         self.word = None
@@ -69,7 +71,7 @@ class WritingAssistant:
         self._review_window()
         if not background or not self.tray.visible:
             self.open_settings()
-        self.root.after(40, self.tick)
+        self.tick_id = self.root.after(40, self.tick)
 
     def _styles(self):
         style = ttk.Style(self.root)
@@ -226,7 +228,13 @@ class WritingAssistant:
         self.dismiss_word = ttk.Button(surface, text="×", width=2, command=self.hide_word)
         self.review_button = ttk.Button(surface, text="Review", command=self.capture)
         self.card = tk.Frame(surface, bg=WHITE, padx=8, pady=5)
-        self.preview = tk.Label(self.card, bg=WHITE, fg=INK, justify="left", wraplength=320)
+        self.preview = tk.Button(self.card, bg=WHITE, fg=INK, justify="left", wraplength=350,
+                                 anchor="w", relief="flat", cursor="hand2", takefocus=False,
+                                 command=self.auto_apply)
+        self.choices = tk.Frame(self.card, bg=WHITE)
+        self.notice = tk.Label(surface, bg=WHITE, fg=INK, justify="left", wraplength=340)
+        self.overlay.update_idletasks()
+        self.overlay_guard = windows.NoActivate(self.overlay)
         self.preview.pack(anchor="w")
         for label, command in (("Copy", self.auto_copy), ("Apply", self.auto_apply),
                                ("3 more", self.auto_more), ("Dismiss", self.auto_hide)):
@@ -235,6 +243,8 @@ class WritingAssistant:
 
     def auto_hide(self):
         self.auto_result = None
+        self.variants = ()
+        self.inline_notice = ""
         self._update_overlay()
 
     def auto_copy(self):
@@ -243,28 +253,57 @@ class WritingAssistant:
                 windows.copy_text(self.hwnd, self.auto_result[1])
                 self.auto_hide()
             except OSError:
-                self.manual("Clipboard busy. Try again.")
+                self.inline_notice = "Clipboard busy. Try Copy again."
 
     def auto_apply(self):
         if self.auto_result:
             excerpt, result = self.auto_result
-            self.auto_hide()
-            self.pending_apply = "word"
-            self.worker.submit("apply", "paragraph", excerpt, result, self.hwnd)
+            self._apply_inline(excerpt, result, "paragraph")
+
+    def _apply_inline(self, excerpt, replacement, token):
+        if self.pending_apply or self.paused:
+            return
+        self.pending_apply = "inline"
+        self.hidden_word = self.word
+        self.inline_notice = ""
+        self.overlay.withdraw()
+        if windows.process_id(windows.foreground()) == self.pid:
+            windows.restore_foreground(excerpt.target.window)
+        self.worker.submit("apply", token, excerpt, replacement, self.hwnd)
 
     def auto_more(self):
-        if self.auto_result:
-            excerpt, _ = self.auto_result
-            self.auto_hide()
-            self.revision += 1
-            self.show_review(excerpt)
-            self.analyze("three")
+        if self.auto_result and not self.auto_busy:
+            self._request_inline(self.auto_result[0], True)
+
+    def _request_inline(self, excerpt, more=False):
+        try:
+            key = settings.load_key()
+        except OSError:
+            key = None
+        if not key:
+            self.inline_notice = "Add your Gemini key in Settings."
+            return
+        self.auto_busy = True
+        model = self.settings.model
+        self.inline_notice = "Getting three versions…" if more else ""
+
+        def send():
+            try:
+                options = request_rewrites(excerpt.text, key, model, "three" if more else False)
+            except GeminiError as exc:
+                self.auto_queue.put((excerpt, more, (), str(exc)))
+            else:
+                self.auto_queue.put((excerpt, more, options, ""))
+
+        threading.Thread(target=send, daemon=True).start()
 
     def _observe(self, excerpt):
         previous = self.auto_seen
         self.auto_seen = excerpt
         if excerpt != previous:
             self.auto_result = self.auto_sent = None
+            self.variants = ()
+            self.inline_notice = ""
             same = previous and excerpt and previous.target.identity == excerpt.target.identity
             self.auto_changed = time.monotonic() if same and previous.text != excerpt.text else None
         if (not excerpt or not self.auto_changed or self.auto_busy or self.auto_sent == excerpt
@@ -272,22 +311,7 @@ class WritingAssistant:
                 or windows.foreground() != excerpt.target.window):
             return
         self.auto_sent = excerpt
-        try:
-            key = settings.load_key()
-        except OSError:
-            return
-        if not key:
-            return
-        self.auto_busy = True
-        model = self.settings.model
-        def send():
-            try:
-                result = request_rewrites(excerpt.text, key, model)[0][1]
-            except GeminiError as exc:
-                self.auto_queue.put((excerpt, None, str(exc)))
-            else:
-                self.auto_queue.put((excerpt, result, ""))
-        threading.Thread(target=send, daemon=True).start()
+        self._request_inline(excerpt)
 
     def _update_overlay(self):
         target = self.target
@@ -298,13 +322,28 @@ class WritingAssistant:
         word = self.word if self.settings.spelling and self.word != self.hidden_word else None
         floating = self.settings.overlay
         result = self.auto_result if self.settings.automatic and self.auto_result and self.auto_result[0].target.identity == target.identity else None
-        signature = (target, word, floating, result)
+        floating = floating and not (word or result or self.settings.automatic)
+        signature = (target, word, floating, result, self.variants, self.inline_notice)
         if self.overlay_signature == signature:
             return
         self.overlay_signature = signature
         for button in (self.word_button, self.dismiss_word, self.review_button):
             button.pack_forget()
         self.card.pack_forget()
+        self.notice.pack_forget()
+        if self.inline_notice:
+            self.notice.configure(text=self.inline_notice)
+            self.notice.pack(side="top")
+        for child in self.choices.winfo_children():
+            child.destroy()
+        self.choices.pack_forget()
+        if result and self.variants:
+            self.choices.pack(side="top", before=self.preview)
+            for tone, version in self.variants:
+                tk.Button(self.choices, text=f"{tone} · {version}", wraplength=350, justify="left",
+                          anchor="w", relief="flat", cursor="hand2", takefocus=False,
+                          command=lambda v=version, e=result[0]: self._apply_inline(e, v, "paragraph")
+                          ).pack(fill="x")
         if result:
             self.preview.configure(text=result[1][:350] + ("…" if len(result[1]) > 350 else ""))
             self.card.pack(side="top")
@@ -314,7 +353,7 @@ class WritingAssistant:
             self.dismiss_word.pack(side="left", padx=(0, 3))
         if floating:
             self.review_button.pack(side="left")
-        if word or floating or result:
+        if word or floating or result or self.inline_notice:
             box = word[0].box if word else target.box
             if (box[2] > box[0] and box[3] > box[1]
                     and all(abs(coordinate) < 100000 for coordinate in box)):
@@ -330,12 +369,7 @@ class WritingAssistant:
         if not self.word or self.pending_apply or self.paused:
             return
         excerpt, replacement = self.word
-        self.hidden_word = self.word
-        self.overlay.withdraw()
-        if windows.process_id(windows.foreground()) == self.pid:
-            windows.restore_foreground(excerpt.target.window)
-        self.pending_apply = "word"
-        self.root.after(80, lambda: self.worker.submit("apply", None, excerpt, replacement, self.hwnd))
+        self._apply_inline(excerpt, replacement, None)
 
     def _review_window(self):
         window = self.review = tk.Toplevel(self.root)
@@ -566,7 +600,11 @@ class WritingAssistant:
                     else:
                         self.dismiss()
                 elif error:
-                    self.manual(error)
+                    self.inline_notice = error
+                else:
+                    self.auto_hide()
+                    self._observe(None)
+                    self.word = None
 
     def _network_results(self):
         while True:
@@ -596,13 +634,14 @@ class WritingAssistant:
         moment = time.monotonic()
         active = not self.paused and not self.ui_fault.startswith("Windows accessibility")
         try:
-            excerpt, polished, error = self.auto_queue.get_nowait()
+            excerpt, more, options, error = self.auto_queue.get_nowait()
             self.auto_busy = False
             if self.settings.automatic and not self.paused and self.auto_seen == excerpt:
-                if polished:
-                    self.auto_result = (excerpt, polished)
-                elif error:
-                    self.settings_status.set(error)
+                self.inline_notice = error
+                if options and more and self.auto_result:
+                    self.variants = tuple(options)
+                elif options and not more:
+                    self.auto_result = (excerpt, options[0][1])
         except queue.Empty:
             pass
         if active and (self.settings.spelling or self.settings.overlay or self.settings.automatic) and self.review.state() == "withdrawn":
@@ -619,9 +658,11 @@ class WritingAssistant:
                     self.auto_pending = True
                     self.worker.submit("paragraph")
         self._update_overlay()
-        self.root.after(40, self.tick)
+        self.tick_id = self.root.after(40, self.tick)
 
     def exit(self):
+        self.root.after_cancel(self.tick_id)
+        self.overlay_guard.close()
         self.tray.close()
         self.hotkey.close()
         self.root.destroy()

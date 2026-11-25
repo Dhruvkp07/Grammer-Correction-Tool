@@ -29,7 +29,7 @@ To build the standalone folder from source, run `./scripts/build.ps1 -Python ./.
 
 ## Automatic suggestions
 
-Enable **Auto-polish** in Settings and save once. In a supported editor, type a message and pause for about two seconds. A small preview offers Apply, Copy, Dismiss and **3 more** for Professional, Casual and Concise versions. Local spelling can suggest **happy** for **happpi**. Auto-polish needs an accessible writable paragraph and at least two words. It sends the current edited paragraph to Gemini after a pause and may use API quota for each changed draft. Turning it off restores manual-only requests.
+Enable **Auto-polish** in Settings and save once. In a supported editor, type a message and pause for about two seconds. Click the suggested word or polished paragraph itself to replace it in the original editor. **3 more** expands inline with Professional, Casual and Concise versions. Click any version to insert it. The separate Review window is available through the shortcut or Settings. If the editor rejects insertion, the overlay shows the reason. Local spelling can suggest **happy** for **happpi**. Auto-polish needs an accessible writable paragraph and at least two words. It sends the current edited paragraph to Gemini after a pause and may use API quota for each changed draft. Turning it off restores manual-only requests.
 
 ## Privacy
 

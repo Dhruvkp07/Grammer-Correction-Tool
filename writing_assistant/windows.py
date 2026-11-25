@@ -135,6 +135,24 @@ def place_popup(window, anchor):
     set_pos(hwnd, -1, left, top, width, height, 0x10 | 0x40)
 
 
+class NoActivate:
+    """Allow mouse clicks on the popup without transferring the editor's input focus."""
+
+    def __init__(self, overlay):
+        self.hwnd = own_window(overlay)
+        self.callback = subclass_proc(self._message)
+        self.installed = set_subclass(self.hwnd, self.callback, 3, 0)
+
+    def _message(self, hwnd, message, wparam, lparam, _subclass, _data):
+        if message == 0x0021:  # WM_MOUSEACTIVATE
+            return 3  # MA_NOACTIVATE still delivers the click.
+        return next_subclass(hwnd, message, wparam, lparam)
+
+    def close(self):
+        if self.installed:
+            remove_subclass(self.hwnd, self.callback, 3)
+
+
 def native_password(hwnd):
     if not hwnd:
         return False
@@ -255,19 +273,33 @@ def clipboard_still_matches(owner, marker):
         close_clipboard()
 
 
-def paste():
-    keys = (Input * 4)()
-    for index, (key, flags) in enumerate(((0x11, 0), (0x56, 0), (0x56, 2), (0x11, 2))):
+def _send_keys(events):
+    keys = (Input * len(events))()
+    for index, (key, flags) in enumerate(events):
         keys[index].kind = 1
         keys[index].keyboard = KeyboardInput(key, 0, flags, 0, 0)
     if send_input(len(keys), keys, c.sizeof(Input)) != len(keys):
-        # Release Ctrl if Windows accepted only part of the batch.
-        release = (Input * 2)()
-        for index, key in enumerate((0x56, 0x11)):
+        releases = list(dict.fromkeys(key for key, _ in reversed(events)))
+        release = (Input * len(releases))()
+        for index, key in enumerate(releases):
             release[index].kind = 1
             release[index].keyboard = KeyboardInput(key, 0, 2, 0, 0)
         send_input(len(release), release, c.sizeof(Input))
-        raise OSError("Windows blocked the paste. Use Copy and paste manually.")
+        raise OSError("Windows blocked the editor shortcut.")
+
+
+def select_word_left(length, trailing_space):
+    events = [(0x25, 0), (0x25, 2)] if trailing_space else []
+    events += [(0x10, 0)] + [(0x25, 0), (0x25, 2)] * length + [(0x10, 2)]
+    _send_keys(events)
+
+
+def select_all():
+    _send_keys([(0x11, 0), (0x41, 0), (0x41, 2), (0x11, 2)])
+
+
+def paste():
+    _send_keys([(0x11, 0), (0x56, 0), (0x56, 2), (0x11, 2)])
 
 
 def dpapi(data, encrypt):
