@@ -98,8 +98,36 @@ class BrowserOverlayTests(unittest.TestCase):
                     field.press_sequentially(" today", delay=70)
                     wait_for(lambda: app.preview.winfo_ismapped() and "today" in app.preview["text"],
                              "Polished paragraph missing")
+                    # A chat composer can intercept clipboard paste even when UIA
+                    # accepted the selection. Ordinary text input should still work.
+                    field.evaluate("el => el.addEventListener('paste', e => e.preventDefault())")
                     click(app.preview)
                     wait_for(lambda: field.inner_text() == "I am happy today.", "Paragraph click failed")
+                    wait_for(lambda: not app.pending_apply, "Paragraph insertion still pending")
+                    more = next(button for button in app.card.winfo_children()
+                                if button.winfo_class() == "TButton" and button["text"] == "3 more")
+                    for index, tone in enumerate(("Professional", "Casual", "Concise")):
+                        # Keep an adjacent paragraph and nested spans as rich chat editors do.
+                        field.evaluate("""el => {
+                            el.innerHTML = '<p>Keep this line.</p><p><span>i am </span><b>drafting</b></p>';
+                            el.focus();
+                            const range = document.createRange();
+                            range.selectNodeContents(el.lastChild);
+                            range.collapse(false);
+                            getSelection().removeAllRanges();
+                            getSelection().addRange(range);
+                        }""")
+                        wait_for(lambda: app.auto_seen and "drafting" in app.auto_seen.text,
+                                 "Paragraph baseline missing")
+                        field.press_sequentially(" another message", delay=45)
+                        wait_for(lambda: app.preview.winfo_ismapped() and "another message" in app.preview["text"],
+                                 "Rich-text paragraph suggestion missing")
+                        click(more)
+                        wait_for(lambda: len(app.choices.winfo_children()) == 3, "Alternatives missing")
+                        click(app.choices.winfo_children()[index])
+                        wait_for(lambda: field.locator("p").all_text_contents() ==
+                                 ["Keep this line.", f"{tone} message."], f"{tone} click failed")
+                        wait_for(lambda: not app.pending_apply, "Alternative insertion still pending")
                     self.assertEqual(app.review.state(), "withdrawn")
             finally:
                 app.exit()

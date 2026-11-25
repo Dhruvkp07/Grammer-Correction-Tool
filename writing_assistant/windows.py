@@ -294,6 +294,26 @@ def select_word_left(length, trailing_space):
     _send_keys(events)
 
 
+def select_paragraph(characters_to_end, length):
+    # The caller checks the resulting range before inserting any text.
+    events = [(0x27, 0), (0x27, 2)] * characters_to_end
+    events += [(0x10, 0)] + [(0x25, 0), (0x25, 2)] * length + [(0x10, 2)]
+    _send_keys(events)
+
+
+def insert_text(text):
+    """Insert printable Unicode into a verified selection as one Windows input batch."""
+    encoded = text.encode("utf-16-le")
+    events = (Input * len(encoded))()
+    for index in range(0, len(encoded), 2):
+        unit = int.from_bytes(encoded[index:index + 2], "little")
+        for offset, flags in ((0, 4), (1, 6)):  # KEYEVENTF_UNICODE, then KEYUP
+            events[index + offset].kind = 1
+            events[index + offset].keyboard = KeyboardInput(0, unit, flags, 0, 0)
+    if send_input(len(events), events, c.sizeof(Input)) != len(events):
+        raise OSError("Windows interrupted insertion. Check the draft before trying again.")
+
+
 def select_all():
     _send_keys([(0x11, 0), (0x41, 0), (0x41, 2), (0x11, 2)])
 
