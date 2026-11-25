@@ -21,6 +21,7 @@ class Settings:
     spelling: bool = True
     overlay: bool = True
     model: str = DEFAULT_MODEL
+    automatic: bool = False
 
     @classmethod
     def load(cls):
@@ -31,6 +32,7 @@ class Settings:
                 values["spelling"] is True,
                 values["overlay"] is True,
                 str(values["model"]),
+                values.get("automatic") is True,
             )
         except (OSError, ValueError, KeyError, TypeError):
             return cls()

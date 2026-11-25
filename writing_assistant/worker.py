@@ -31,6 +31,17 @@ class EditorWorker:
                     if candidate:
                         return target, word, candidate
             return target, word, None
+        if action == "paragraph":
+            excerpt, region = editor.paragraph()
+            previous = self.ranges.get("paragraph")
+            self.ranges["paragraph"] = region
+            continuous = False
+            if previous and region:
+                try:
+                    continuous = previous.CompareEndpoints(0, region, 0) == 0
+                except editor.com_error:
+                    pass
+            return excerpt, continuous
         if action == "capture":
             token, hwnd = data
             excerpt, text_range = editor.capture(hwnd)

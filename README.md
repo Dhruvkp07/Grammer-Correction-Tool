@@ -27,11 +27,15 @@ To build the standalone folder from source, run `./scripts/build.ps1 -Python ./.
 5. Choose a version, then **Apply**, **Copy**, or **Dismiss**. If the original text or selection changed, capture it again or copy the rewrite. For unsupported editors, open **Review** from Settings, paste the text manually, and copy the result back.
 6. Click the tray icon to reopen Settings, pause integration, change the shortcut, turn off the spelling overlay or Review button, configure Windows startup, or exit. To replace the key, paste another key and save. Use **Remove API key** to delete it.
 
+## Automatic suggestions
+
+Enable **Auto-polish** in Settings and save once. In a supported editor, type a message and pause for about two seconds. A small preview offers Apply, Copy, Dismiss and **3 more** for Professional, Casual and Concise versions. Local spelling can suggest **happy** for **happpi**. Auto-polish needs an accessible writable paragraph and at least two words. It sends the current edited paragraph to Gemini after a pause and may use API quota for each changed draft. Turning it off restores manual-only requests.
+
 ## Privacy
 
 - Spellchecking uses a local English dictionary. The app inspects the supported focused editor via Windows UI Automation. It does not install a keyboard hook or build a record of typed text.
 - Windows-marked password controls are excluded before text access. The app skips focused controls when their password status is unavailable. A custom app must correctly identify its sensitive controls to Windows. Pause editor integration for sensitive work.
-- Only clicking **Polish with Gemini** or **Get 5 versions** sends the displayed text, up to 4,000 characters, to the Gemini API over HTTPS. Requests also include a standard editing instruction, the requested tones, and your key for authentication. No document title, app name, caret context, or spelling data is sent. Google's API terms apply to the submitted text.
+- With Auto-polish off, clicking **Polish with Gemini** or **Get 5 versions** sends the displayed text, up to 4,000 characters, to the Gemini API over HTTPS. Requests also include a standard editing instruction, the requested tones, and your key for authentication. No document title, app name, caret context, or spelling data is sent. Google's API terms apply to the submitted text.
 - The app does not save reviewed text or results. The API key is encrypted with Windows DPAPI for the current user and stored under `%LOCALAPPDATA%\Writing Assistant`. Settings are stored separately.
 - **Copy** and Apply in editors that need a paste replace the current clipboard contents. The app marks these entries to exclude them from Windows clipboard history and cloud sync. Other clipboard tools may still see the current clipboard.
 

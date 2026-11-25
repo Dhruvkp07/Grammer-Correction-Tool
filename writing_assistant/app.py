@@ -28,6 +28,13 @@ class WritingAssistant:
         self.settings = settings.Settings.load()
         self.worker = EditorWorker()
         self.network = queue.SimpleQueue()
+        self.auto_seen = None
+        self.auto_changed = None
+        self.auto_sent = None
+        self.auto_pending = False
+        self.auto_busy = False
+        self.auto_result = None
+        self.auto_queue = queue.SimpleQueue()
         self.target = None
         self.word = None
         self.hidden_word = None
@@ -97,9 +104,11 @@ class WritingAssistant:
         ttk.Label(body, text="Editor settings", style="Section.TLabel").grid(sticky="w")
         self.spelling_control = tk.BooleanVar(value=self.settings.spelling)
         self.overlay_control = tk.BooleanVar(value=self.settings.overlay)
+        self.auto_control = tk.BooleanVar(value=self.settings.automatic)
         self.startup_control = tk.BooleanVar(value=False)
         for label, value in (
             ("Show local spelling and word completions", self.spelling_control),
+            ("Auto-polish: send the current paragraph to Gemini after a typing pause", self.auto_control),
             ("Show floating Review button", self.overlay_control),
             ("Start in the tray when I sign in to Windows", self.startup_control),
         ):
@@ -117,7 +126,7 @@ class WritingAssistant:
         ttk.Label(body, text="Gemini model ID", style="Muted.TLabel").grid(sticky="w", pady=(9, 0))
         self.model_control = tk.StringVar(value=self.settings.model)
         ttk.Entry(body, textvariable=self.model_control, width=54).grid(sticky="ew", pady=(2, 10))
-        ttk.Label(body, text="Only the text shown in Review is sent when you request a rewrite.",
+        ttk.Label(body, text="Auto-polish sends edited paragraphs when enabled. Manual Review sends the displayed text on request.",
                   style="Muted.TLabel", wraplength=455).grid(sticky="w")
         footer = ttk.Frame(body)
         footer.grid(sticky="ew", pady=(12, 0))
@@ -162,13 +171,14 @@ class WritingAssistant:
                 raise ValueError("Enter a valid Gemini model ID.")
             if key and (not key.isascii() or re.search(r"\s", key) or len(key) > 512):
                 raise ValueError("Paste the API key as a single value.")
-            updated = settings.Settings(shortcut.label, self.spelling_control.get(), self.overlay_control.get(), model)
+            updated = settings.Settings(shortcut.label, self.spelling_control.get(), self.overlay_control.get(), model, self.auto_control.get())
             self.hotkey.set(shortcut)
             try:
                 updated.save()
             except OSError:
                 self.hotkey.set(parse_shortcut(previous.shortcut))
                 raise
+            self._observe(None)
             self.settings = updated
             self.shortcut_control.set(shortcut.label)
             if key:
@@ -199,6 +209,7 @@ class WritingAssistant:
             self.settings_status.set("Windows could not remove the saved API key.")
 
     def toggle_pause(self):
+        self._observe(None)
         self.paused = not self.paused
         self.word = self.target = None
         self.word_input = None
@@ -214,7 +225,69 @@ class WritingAssistant:
         self.word_button = ttk.Button(surface, style="Primary.TButton", command=self.apply_word)
         self.dismiss_word = ttk.Button(surface, text="×", width=2, command=self.hide_word)
         self.review_button = ttk.Button(surface, text="Review", command=self.capture)
+        self.card = tk.Frame(surface, bg=WHITE, padx=8, pady=5)
+        self.preview = tk.Label(self.card, bg=WHITE, fg=INK, justify="left", wraplength=320)
+        self.preview.pack(anchor="w")
+        for label, command in (("Copy", self.auto_copy), ("Apply", self.auto_apply),
+                               ("3 more", self.auto_more), ("Dismiss", self.auto_hide)):
+            ttk.Button(self.card, text=label, command=command).pack(side="left")
         self.overlay_signature = None
+
+    def auto_hide(self):
+        self.auto_result = None
+        self._update_overlay()
+
+    def auto_copy(self):
+        if self.auto_result:
+            try:
+                windows.copy_text(self.hwnd, self.auto_result[1])
+                self.auto_hide()
+            except OSError:
+                self.manual("Clipboard busy. Try again.")
+
+    def auto_apply(self):
+        if self.auto_result:
+            excerpt, result = self.auto_result
+            self.auto_hide()
+            self.pending_apply = "word"
+            self.worker.submit("apply", "paragraph", excerpt, result, self.hwnd)
+
+    def auto_more(self):
+        if self.auto_result:
+            excerpt, _ = self.auto_result
+            self.auto_hide()
+            self.revision += 1
+            self.show_review(excerpt)
+            self.analyze("three")
+
+    def _observe(self, excerpt):
+        previous = self.auto_seen
+        self.auto_seen = excerpt
+        if excerpt != previous:
+            self.auto_result = self.auto_sent = None
+            same = previous and excerpt and previous.target.identity == excerpt.target.identity
+            self.auto_changed = time.monotonic() if same and previous.text != excerpt.text else None
+        if (not excerpt or not self.auto_changed or self.auto_busy or self.auto_sent == excerpt
+                or time.monotonic() - self.auto_changed < 1.6 or len(excerpt.text.split()) < 2
+                or windows.foreground() != excerpt.target.window):
+            return
+        self.auto_sent = excerpt
+        try:
+            key = settings.load_key()
+        except OSError:
+            return
+        if not key:
+            return
+        self.auto_busy = True
+        model = self.settings.model
+        def send():
+            try:
+                result = request_rewrites(excerpt.text, key, model)[0][1]
+            except GeminiError as exc:
+                self.auto_queue.put((excerpt, None, str(exc)))
+            else:
+                self.auto_queue.put((excerpt, result, ""))
+        threading.Thread(target=send, daemon=True).start()
 
     def _update_overlay(self):
         target = self.target
@@ -224,19 +297,24 @@ class WritingAssistant:
             return
         word = self.word if self.settings.spelling and self.word != self.hidden_word else None
         floating = self.settings.overlay
-        signature = (target, word, floating)
+        result = self.auto_result if self.settings.automatic and self.auto_result and self.auto_result[0].target.identity == target.identity else None
+        signature = (target, word, floating, result)
         if self.overlay_signature == signature:
             return
         self.overlay_signature = signature
         for button in (self.word_button, self.dismiss_word, self.review_button):
             button.pack_forget()
+        self.card.pack_forget()
+        if result:
+            self.preview.configure(text=result[1][:350] + ("…" if len(result[1]) > 350 else ""))
+            self.card.pack(side="top")
         if word:
             self.word_button.configure(text=word[1])
             self.word_button.pack(side="left", padx=(0, 3))
             self.dismiss_word.pack(side="left", padx=(0, 3))
         if floating:
             self.review_button.pack(side="left")
-        if word or floating:
+        if word or floating or result:
             box = word[0].box if word else target.box
             if (box[2] > box[0] and box[3] > box[1]
                     and all(abs(coordinate) < 100000 for coordinate in box)):
@@ -356,6 +434,7 @@ class WritingAssistant:
         self.excerpt = excerpt
         self.options = []
         self.scope.set({
+            "paragraph": "Current paragraph · Choose an alternative to copy or apply.",
             "selection": "Selected text · Only this excerpt is sent when you request a rewrite.",
             "field": "Current text field · This field is sent when you request a rewrite.",
             "manual": "Paste or type text below. Only that text is sent when you request a rewrite.",
@@ -468,6 +547,12 @@ class WritingAssistant:
                     self.word = (excerpt, candidate) if candidate else None
                     if self.word != self.hidden_word:
                         self.hidden_word = None
+            elif action == "paragraph":
+                self.auto_pending = False
+                paragraph, continuous = result or (None, False)
+                if not continuous:
+                    self._observe(None)
+                self._observe(paragraph if self.settings.automatic and not self.paused and self.review.state() == "withdrawn" else None)
             elif action == "capture":
                 self.pending_capture = False
                 self.show_review(result[1] if result else None, error)
@@ -510,7 +595,17 @@ class WritingAssistant:
         self._network_results()
         moment = time.monotonic()
         active = not self.paused and not self.ui_fault.startswith("Windows accessibility")
-        if active and (self.settings.spelling or self.settings.overlay) and self.review.state() == "withdrawn":
+        try:
+            excerpt, polished, error = self.auto_queue.get_nowait()
+            self.auto_busy = False
+            if self.settings.automatic and not self.paused and self.auto_seen == excerpt:
+                if polished:
+                    self.auto_result = (excerpt, polished)
+                elif error:
+                    self.settings_status.set(error)
+        except queue.Empty:
+            pass
+        if active and (self.settings.spelling or self.settings.overlay or self.settings.automatic) and self.review.state() == "withdrawn":
             if moment >= self.next_probe and not self.pending_probe and not self.pending_capture and not self.pending_apply:
                 input_id, idle_ms = windows.last_input()
                 read_word = self.settings.spelling and input_id != self.word_input and 275 <= idle_ms <= 5000
@@ -520,6 +615,9 @@ class WritingAssistant:
                 self.probe_requested_word = read_word
                 self.next_probe = moment + 0.32
                 self.worker.submit("probe", read_word)
+                if self.settings.automatic and not self.auto_pending:
+                    self.auto_pending = True
+                    self.worker.submit("paragraph")
         self._update_overlay()
         self.root.after(40, self.tick)
 

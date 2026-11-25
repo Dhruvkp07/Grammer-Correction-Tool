@@ -39,6 +39,7 @@ class WindowsTests(unittest.TestCase):
         from writing_assistant.core import Spelling
 
         spelling = Spelling()
+        self.assertEqual(spelling.suggest("happpi", False), "happy")
         self.assertEqual(spelling.suggest("writng", True), "writing")
         self.assertIsNone(spelling.suggest("writing", True))
 
@@ -85,6 +86,12 @@ class WindowsTests(unittest.TestCase):
 
         if not control(0):
             self.skipTest("Windows runner did not grant foreground access to the fixture")
+        error, result = request("paragraph")
+        self.assertEqual(error, "")
+        paragraph, _ = result
+        self.assertEqual(paragraph.text.strip(), "I am writng now.")
+        error, result = request("paragraph")
+        self.assertTrue(result[1], "Same paragraph should keep the debounce baseline")
         error, result = request("probe", True)
         self.assertEqual(error, "")
         _, word, candidate = result

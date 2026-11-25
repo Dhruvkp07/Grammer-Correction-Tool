@@ -217,6 +217,26 @@ class Editor:
             raise EditorError(f"Select an excerpt of at most {MAX_SOURCE:,} characters.")
         return Excerpt(target, scope, source, context, target.box), selected
 
+    def paragraph(self):
+        focus = self._focus()
+        if not focus:
+            return None, None
+        target, element = focus
+        value, text = self._patterns(element)
+        if not text:
+            return None, None
+        caret = self._caret(element, text)
+        if not caret or not self._editable(value, caret):
+            return None, None
+        region = caret.Clone()
+        region.ExpandToEnclosingUnit(4)  # TextUnit_Paragraph
+        if not self._document_selection_allowed(region):
+            return None, None
+        source = region.GetText(MAX_SOURCE + 1)
+        if len(source) > MAX_SOURCE or windows.foreground() != target.window:
+            return None, None
+        return Excerpt(target, "paragraph", source, (), target.box), region
+
     def capture(self, expected_window):
         focus = self._focus()
         if not focus or focus[0].window != expected_window:
@@ -240,7 +260,9 @@ class Editor:
             raise EditorError("The original text field is no longer focused. Use Copy to keep the rewrite.")
         target, element = focus
         value, text = self._patterns(element)
-        if original.scope == "word":
+        if original.scope == "paragraph":
+            current, text_range = self.paragraph()
+        elif original.scope == "word":
             current, text_range = self._word(target, element, value, text)
         else:
             current, text_range = self._excerpt(target, element, value, text)
