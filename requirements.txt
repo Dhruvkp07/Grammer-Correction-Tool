@@ -1,0 +1,2 @@
+comtypes==1.4.13
+pyspellchecker==0.8.4
