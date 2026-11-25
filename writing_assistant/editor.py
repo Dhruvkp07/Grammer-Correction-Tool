@@ -2,6 +2,7 @@
 
 import os
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -291,11 +292,41 @@ class Editor:
         focused = self._focus()
         if not focused or focused[0].identity != target.identity or focused[0].window != target.window:
             raise EditorError("The active field changed. The replacement is available on the clipboard.")
-        text_range.Select()
-        selected = self._selection(text)
-        if (not selected or not selected.Compare(text_range)
-                or selected.GetText(len(current.text) + 1) != current.text):
-            raise EditorError("This editor did not select the expected text. Use Copy.")
+        def selection_matches():
+            deadline = time.monotonic() + 0.45
+            while windows.foreground() == target.window:
+                selected = self._selection(text)
+                if (selected and selected.CompareEndpoints(START, text_range, START) == 0
+                        and selected.CompareEndpoints(END, text_range, END) == 0
+                        and selected.GetText(len(current.text) + 1) == current.text):
+                    return True
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.025)
+            return False
+
+        try:
+            text_range.Select()
+        except self.com_error:
+            pass
+        if not selection_matches():
+            # Some browser editors expose a range before they implement UIA Select.
+            # Use keyboard selection only from a revalidated starting position.
+            focused = self._focus()
+            if not focused or focused[0] != target or windows.active_modifiers():
+                raise EditorError("The target editor changed. Try the suggestion again.")
+            if current.scope == "word":
+                live, _ = self._word(target, element, value, text)
+                if not self._matches(current, live):
+                    raise EditorError("The word moved. Try the latest suggestion.")
+                windows.select_word_left(len(current.text), current.finished)
+            elif (current.scope == "paragraph" and element.CurrentControlType == EDIT
+                  and text.DocumentRange.GetText(len(current.text) + 1) == current.text):
+                windows.select_all()
+            else:
+                raise EditorError("This editor could not select the suggestion. Use Copy.")
+            if not selection_matches():
+                raise EditorError("The editor did not confirm the replacement range. Use Copy.")
         focused = self._focus()
         if (not focused or focused[0].identity != target.identity or focused[0].window != target.window):
             raise EditorError("The focused field changed before paste. Use Copy.")
