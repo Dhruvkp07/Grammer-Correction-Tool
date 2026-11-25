@@ -17,7 +17,7 @@ class BrowserOverlayTests(unittest.TestCase):
 
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(channel="msedge", headless=False,
-                                                args=["--force-renderer-accessibility"])
+                                                args=["--force-renderer-accessibility", "--enable-features=UiaProvider", "--window-position=0,0"])
             page = browser.new_page()
             page.set_content('<div role="textbox" aria-label="Message" contenteditable="true" '
                              'style="margin:100px;padding:20px;border:1px solid"></div>')
@@ -36,7 +36,13 @@ class BrowserOverlayTests(unittest.TestCase):
                         if predicate():
                             return
                         page.wait_for_timeout(40)
-                    self.fail(f"{description}. Inline status: {app.inline_notice}")
+                    from writing_assistant.editor import Editor
+                    editor = Editor()
+                    element = editor.uia.GetFocusedElement()
+                    self.fail(f"{description}. Focus type={element.CurrentControlType}, "
+                              f"class={element.CurrentClassName}, keyboard={element.CurrentHasKeyboardFocus}, "
+                              f"password flag type={type(element.GetCurrentPropertyValueEx(30019, True))}, "
+                              f"status={app.ui_fault} {app.inline_notice}")
 
                 def click(button):
                     x = button.winfo_rootx() + button.winfo_width() // 2
@@ -54,6 +60,16 @@ class BrowserOverlayTests(unittest.TestCase):
                      patch("writing_assistant.app.request_rewrites", side_effect=rewrites):
                     page.bring_to_front()
                     field.click()
+                    # CDP can focus a DOM node without putting the native window in
+                    # front. A real click in the editor establishes desktop focus.
+                    x, y = field.evaluate("""el => {
+                        const r = el.getBoundingClientRect();
+                        return [(screenX + (outerWidth - innerWidth) / 2 + r.x + 20) * devicePixelRatio,
+                                (screenY + outerHeight - innerHeight + r.y + 15) * devicePixelRatio];
+                    }""")
+                    windows.user.SetCursorPos(round(x), round(y))
+                    windows.user.mouse_event(2, 0, 0, 0, 0)
+                    windows.user.mouse_event(4, 0, 0, 0, 0)
                     wait_for(lambda: app.target is not None, "Browser editor was not recognized")
                     field.press_sequentially("i am happpi", delay=60)
                     # Playwright's input is delivered by DevTools. Send a physical

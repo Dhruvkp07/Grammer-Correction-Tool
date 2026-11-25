@@ -71,7 +71,7 @@ class WritingAssistant:
         self._review_window()
         if not background or not self.tray.visible:
             self.open_settings()
-        self.root.after(40, self.tick)
+        self.tick_id = self.root.after(40, self.tick)
 
     def _styles(self):
         style = ttk.Style(self.root)
@@ -658,9 +658,10 @@ class WritingAssistant:
                     self.auto_pending = True
                     self.worker.submit("paragraph")
         self._update_overlay()
-        self.root.after(40, self.tick)
+        self.tick_id = self.root.after(40, self.tick)
 
     def exit(self):
+        self.root.after_cancel(self.tick_id)
         self.overlay_guard.close()
         self.tray.close()
         self.hotkey.close()
