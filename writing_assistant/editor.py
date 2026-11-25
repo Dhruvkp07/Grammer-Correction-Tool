@@ -308,15 +308,34 @@ class Editor:
         focused = self._focus()
         if not focused or focused[0].identity != target.identity or focused[0].window != target.window:
             raise EditorError("The active field changed. The replacement is available on the clipboard.")
+        def normalized(value):
+            return value.replace("\r\n", "\n").replace("\xa0", " ")
+
+        def unique_selection(selected):
+            # Chromium may use equivalent offsets on different accessibility nodes.
+            # Accept a text match only if the bounded, editable field has exactly
+            # one occurrence and the selection belongs to that same field.
+            if element.CurrentControlType != EDIT or not self._document_selection_allowed(text.DocumentRange):
+                return False
+            document = text.DocumentRange
+            full = document.GetText(MAX_SOURCE + 1)
+            if len(full) > MAX_SOURCE:
+                return False
+            needle = normalized(current.text)
+            haystack = normalized(full)
+            return (needle and haystack.find(needle) >= 0 and haystack.find(needle) == haystack.rfind(needle)
+                    and selected.CompareEndpoints(START, document, START) >= 0
+                    and selected.CompareEndpoints(END, document, END) <= 0)
+
         def selection_matches():
             deadline = time.monotonic() + 0.45
             while windows.foreground() == target.window:
                 selected = self._selection(text)
-                if selected and selected.GetText(len(current.text) + 1) == current.text:
+                if selected and normalized(selected.GetText(len(current.text) + 2)) == normalized(current.text):
                     if whole_draft and text.DocumentRange.GetText(len(current.text) + 1) == current.text:
                         return True
-                    if (selected.CompareEndpoints(START, text_range, START) == 0
-                            and selected.CompareEndpoints(END, text_range, END) == 0):
+                    if ((selected.CompareEndpoints(START, text_range, START) == 0
+                             and selected.CompareEndpoints(END, text_range, END) == 0) or unique_selection(selected)):
                         return True
                 if time.monotonic() >= deadline:
                     break
@@ -368,9 +387,6 @@ class Editor:
         def still_in_editor():
             focus = self._focus()
             return focus and focus[0].window == target.window and focus[0].identity == target.identity
-
-        def normalized(value):
-            return value.replace("\r\n", "\n").replace("\xa0", " ")
 
         def inserted(timeout):
             deadline = time.monotonic() + timeout

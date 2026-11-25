@@ -56,7 +56,11 @@ class BrowserOverlayTests(unittest.TestCase):
                     from writing_assistant.editor import Editor
                     editor = Editor()
                     element = editor.uia.GetFocusedElement()
-                    self.fail(f"{description}. Focus type={element.CurrentControlType}, "
+                    _, text = editor._patterns(element)
+                    selected = editor._selection(text) if text else None
+                    selected_text = selected.GetText(150) if selected else None
+                    dom_selection = page.evaluate("getSelection().toString()")
+                    self.fail(f"{description}. UIA={selected_text!r} DOM={dom_selection!r} Focus type={element.CurrentControlType}, "
                               f"class={element.CurrentClassName}, keyboard={element.CurrentHasKeyboardFocus}, "
                               f"password flag type={type(element.GetCurrentPropertyValueEx(30019, True))}, "
                               f"domFocus={field.evaluate('el => el === document.activeElement')}, name={element.CurrentName}, " 
