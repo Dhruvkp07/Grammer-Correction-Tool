@@ -7,6 +7,12 @@ from unittest.mock import patch
 @unittest.skipUnless(sys.platform == "win32", "Requires Windows")
 class BrowserOverlayTests(unittest.TestCase):
     def test_edge_contenteditable_clicks(self):
+        self.exercise_composer("msedge")
+
+    def test_chrome_multiline_chat_apply(self):
+        self.exercise_composer("chrome")
+
+    def exercise_composer(self, channel):
         import tkinter as tk
         from writing_assistant.app import WritingAssistant
         from writing_assistant import windows
@@ -16,10 +22,12 @@ class BrowserOverlayTests(unittest.TestCase):
             self.skipTest("Install playwright to run the Edge integration test")
 
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(channel="msedge", headless=False,
-                                                args=["--force-renderer-accessibility", "--enable-features=UiaProvider", "--window-position=0,0"])
+            args = ["--window-position=0,0"]
+            if channel == "msedge":
+                args.extend(["--force-renderer-accessibility", "--enable-features=UiaProvider"])
+            browser = playwright.chromium.launch(channel=channel, headless=False, args=args)
             page = browser.new_page(no_viewport=True)
-            page.set_content('<div role="textbox" tabindex="0" aria-label="Message" contenteditable="true" '
+            page.set_content('<div role="textbox" aria-multiline="true" tabindex="0" aria-label="Message" contenteditable="true" '
                              'style="margin:100px;padding:20px;border:1px solid"></div>')
             field = page.get_by_role("textbox")
             root = tk.Tk()
@@ -48,17 +56,26 @@ class BrowserOverlayTests(unittest.TestCase):
                     from writing_assistant.editor import Editor
                     editor = Editor()
                     element = editor.uia.GetFocusedElement()
-                    self.fail(f"{description}. Focus type={element.CurrentControlType}, "
+                    _, text = editor._patterns(element)
+                    selected = editor._selection(text) if text else None
+                    selected_text = selected.GetText(150) if selected else None
+                    dom_selection = page.evaluate("getSelection().toString()")
+                    self.fail(f"{description}. UIA={selected_text!r} DOM={dom_selection!r} Focus type={element.CurrentControlType}, "
                               f"class={element.CurrentClassName}, keyboard={element.CurrentHasKeyboardFocus}, "
                               f"password flag type={type(element.GetCurrentPropertyValueEx(30019, True))}, "
                               f"domFocus={field.evaluate('el => el === document.activeElement')}, name={element.CurrentName}, " 
                               f"text={field.inner_text()!r}, operations={apply_results}, status={app.ui_fault} {app.inline_notice}")
 
-                def click(button):
+                def click(button, hold=False):
                     x = button.winfo_rootx() + button.winfo_width() // 2
                     y = button.winfo_rooty() + button.winfo_height() // 2
                     windows.user.SetCursorPos(x, y)
                     windows.user.mouse_event(2, 0, 0, 0, 0)
+                    if hold:
+                        until = time.monotonic() + 0.55
+                        while time.monotonic() < until:
+                            root.update()
+                            page.wait_for_timeout(20)
                     windows.user.mouse_event(4, 0, 0, 0, 0)
 
                 def rewrites(source, _key, _model, alternatives=False):
@@ -98,12 +115,37 @@ class BrowserOverlayTests(unittest.TestCase):
                     field.press_sequentially(" today", delay=70)
                     wait_for(lambda: app.preview.winfo_ismapped() and "today" in app.preview["text"],
                              "Polished paragraph missing")
-                    # A chat composer can intercept clipboard paste even when UIA
-                    # accepted the selection. Ordinary text input should still work.
-                    field.evaluate("el => el.addEventListener('paste', e => e.preventDefault())")
-                    click(app.preview)
-                    wait_for(lambda: field.inner_text() == "I am happy today.", "Paragraph click failed")
+                    # This composer accepts clipboard paste but rejects per-character
+                    # insertText events, like an editor that manages its own input model.
+                    field.evaluate("""el => {
+                        window.blockTyping = true;
+                        el.addEventListener('beforeinput', e => {
+                            if (window.blockTyping && e.inputType === 'insertText') e.preventDefault();
+                        });
+                        window.pasteCount = 0;
+                        el.addEventListener('paste', () => window.pasteCount++);
+                    }""")
+                    if channel == "chrome":
+                        # Model a rich chat composer that owns its paste event and
+                        # tracks draft state through input events.
+                        field.evaluate("""el => {
+                            el.addEventListener('input', () => { window.draft = el.innerText; });
+                            el.addEventListener('paste', event => {
+                                if (!window.blockTyping) return;
+                                event.preventDefault();
+                                document.execCommand('insertText', false, event.clipboardData.getData('text/plain'));
+                            });
+                        }""")
+                    click(app.inline_apply, hold=True)
+                    wait_for(lambda: field.inner_text() == "I am happy today.", "Apply button failed")
+                    self.assertEqual(page.evaluate("window.pasteCount"), 1)
+                    if channel == "chrome":
+                        self.assertEqual(page.evaluate("window.draft"), "I am happy today.")
                     wait_for(lambda: not app.pending_apply, "Paragraph insertion still pending")
+                    field.evaluate("""el => {
+                        window.blockTyping = false;
+                        el.addEventListener('paste', e => e.preventDefault());
+                    }""")
                     more = next(button for button in app.card.winfo_children()
                                 if button.winfo_class() == "TButton" and button["text"] == "3 more")
                     for index, tone in enumerate(("Professional", "Casual", "Concise")):

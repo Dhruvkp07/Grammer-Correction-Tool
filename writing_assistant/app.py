@@ -238,8 +238,29 @@ class WritingAssistant:
         self.preview.pack(anchor="w")
         for label, command in (("Copy", self.auto_copy), ("Apply", self.auto_apply),
                                ("3 more", self.auto_more), ("Dismiss", self.auto_hide)):
-            ttk.Button(self.card, text=label, command=command).pack(side="left")
+            button = ttk.Button(self.card, text=label, command=command, takefocus=False)
+            button.pack(side="left")
+            if label == "Apply":
+                self.inline_apply = button
+        # ttk's default mouse binding may move keyboard focus into the popup.
+        # Hold the displayed suggestion across a mouse press and UIA poll.
+        self.pressed_rewrite = None
+        self.inline_apply.bind("<ButtonPress-1>", self._press_apply)
+        self.inline_apply.bind("<ButtonRelease-1>", self._release_apply)
         self.overlay_signature = None
+
+    def _press_apply(self, event):
+        self.pressed_rewrite = self.auto_result
+        event.widget.state(["pressed"])
+        return "break"
+
+    def _release_apply(self, event):
+        suggestion, self.pressed_rewrite = self.pressed_rewrite, None
+        event.widget.state(["!pressed"])
+        inside = 0 <= event.x < event.widget.winfo_width() and 0 <= event.y < event.widget.winfo_height()
+        if suggestion and inside:
+            self._apply_inline(*suggestion, "paragraph")
+        return "break"
 
     def auto_hide(self):
         self.auto_result = None
@@ -270,7 +291,7 @@ class WritingAssistant:
         self.overlay.withdraw()
         if overlay_had_focus:
             windows.restore_foreground(excerpt.target.window)
-        self.root.after(80 if overlay_had_focus else 0,
+        self.root.after(120 if overlay_had_focus else 40,
                         lambda: self.worker.submit("apply", token, excerpt, replacement, self.hwnd))
 
     def auto_more(self):
@@ -316,6 +337,8 @@ class WritingAssistant:
         self._request_inline(excerpt)
 
     def _update_overlay(self):
+        if self.pressed_rewrite and not self.paused:
+            return
         target = self.target
         if self.paused or not target or self.pending_capture or self.pending_apply or self.review.state() != "withdrawn":
             self.overlay.withdraw()
