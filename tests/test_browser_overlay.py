@@ -18,8 +18,8 @@ class BrowserOverlayTests(unittest.TestCase):
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(channel="msedge", headless=False,
                                                 args=["--force-renderer-accessibility", "--enable-features=UiaProvider", "--window-position=0,0"])
-            page = browser.new_page()
-            page.set_content('<div role="textbox" aria-label="Message" contenteditable="true" '
+            page = browser.new_page(no_viewport=True)
+            page.set_content('<div role="textbox" tabindex="0" aria-label="Message" contenteditable="true" '
                              'style="margin:100px;padding:20px;border:1px solid"></div>')
             field = page.get_by_role("textbox")
             root = tk.Tk()
@@ -42,7 +42,8 @@ class BrowserOverlayTests(unittest.TestCase):
                     self.fail(f"{description}. Focus type={element.CurrentControlType}, "
                               f"class={element.CurrentClassName}, keyboard={element.CurrentHasKeyboardFocus}, "
                               f"password flag type={type(element.GetCurrentPropertyValueEx(30019, True))}, "
-                              f"status={app.ui_fault} {app.inline_notice}")
+                              f"domFocus={field.evaluate('el => el === document.activeElement')}, name={element.CurrentName}, " 
+                              f"nativeTarget={editor._focus()}, status={app.ui_fault} {app.inline_notice}")
 
                 def click(button):
                     x = button.winfo_rootx() + button.winfo_width() // 2
@@ -70,8 +71,10 @@ class BrowserOverlayTests(unittest.TestCase):
                     windows.user.SetCursorPos(round(x), round(y))
                     windows.user.mouse_event(2, 0, 0, 0, 0)
                     windows.user.mouse_event(4, 0, 0, 0, 0)
+                    field.focus()
+                    field.press_sequentially("i", delay=80)
                     wait_for(lambda: app.target is not None, "Browser editor was not recognized")
-                    field.press_sequentially("i am happpi", delay=60)
+                    field.press_sequentially(" am happpi", delay=60)
                     # Playwright's input is delivered by DevTools. Send a physical
                     # Shift tap so GetLastInputInfo observes the typing pause.
                     windows.user.keybd_event(0x10, 0, 0, 0)
