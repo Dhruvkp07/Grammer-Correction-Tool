@@ -1,0 +1,41 @@
+name: Windows build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          architecture: x64
+          cache: pip
+      - name: Install and test
+        shell: pwsh
+        run: |
+          python -m pip install -r requirements.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest discover -v
+      - name: Package Windows desktop app
+        shell: pwsh
+        run: ./scripts/build.ps1
+      - name: Smoke-test packaged Windows app
+        shell: pwsh
+        run: |
+          $result = Start-Process -FilePath ./dist/WritingAssistant/WritingAssistant.exe -ArgumentList '--self-test' -Wait -PassThru
+          exit $result.ExitCode
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WritingAssistant-Windows-x64
+          path: dist/WritingAssistant/
+          if-no-files-found: error
