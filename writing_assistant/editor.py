@@ -242,6 +242,16 @@ class Editor:
         source = region.GetText(MAX_SOURCE + 1)
         if len(source) > MAX_SOURCE or windows.foreground() != target.window:
             return None, None
+        # Chromium can include an unselectable block delimiter in the UIA range.
+        # Do not replace the separator between this draft and the next paragraph.
+        body = source.rstrip("\r\n")
+        while source != body:
+            if region.MoveEndpointByUnit(END, CHARACTER, -1) != -1:
+                return None, None
+            shorter = region.GetText(MAX_SOURCE + 1)
+            if shorter == source or not shorter.startswith(body):
+                return None, None
+            source = shorter
         return Excerpt(target, "paragraph", source, (), target.box), region
 
     def capture(self, expected_window):
@@ -279,16 +289,13 @@ class Editor:
             raise EditorError("The caret or selection moved. Capture it again or use Copy.")
         if windows.foreground() != target.window or windows.active_modifiers():
             raise EditorError("Return to the original editor and release any shortcut keys.")
-        if current.scope == "paragraph":
-            # UIA may include the separator before the following paragraph.
-            suffix = current.text[len(current.text.rstrip("\r\n")):]
-            replacement = replacement.rstrip("\r\n") + suffix
+        direct_text = current.scope == "paragraph" and all(ord(ch) >= 32 for ch in replacement)
         if current.scope == "field" and value:
             value.SetValue(replacement)
             return
         if not text_range or not text:
             raise EditorError("This editor cannot apply the replacement. Use Copy.")
-        marker = windows.copy_text(owner, replacement)
+        marker = None if direct_text else windows.copy_text(owner, replacement)
         focused = self._focus()
         if not focused or focused[0].identity != target.identity or focused[0].window != target.window:
             raise EditorError("The active field changed. The replacement is available on the clipboard.")
@@ -313,7 +320,8 @@ class Editor:
             # Some browser editors expose a range before they implement UIA Select.
             # Use keyboard selection only from a revalidated starting position.
             focused = self._focus()
-            if not focused or focused[0] != target or windows.active_modifiers():
+            if (not focused or focused[0].identity != target.identity or focused[0].window != target.window
+                    or windows.active_modifiers()):
                 raise EditorError("The target editor changed. Try the suggestion again.")
             if current.scope == "word":
                 live, _ = self._word(target, element, value, text)
@@ -323,6 +331,14 @@ class Editor:
             elif (current.scope == "paragraph" and element.CurrentControlType == EDIT
                   and text.DocumentRange.GetText(len(current.text) + 1) == current.text):
                 windows.select_all()
+            elif current.scope == "paragraph":
+                caret = self._caret(element, text)
+                if (not caret or caret.CompareEndpoints(START, text_range, START) < 0
+                        or caret.CompareEndpoints(END, text_range, END) > 0):
+                    raise EditorError("The cursor moved outside this paragraph. Try the latest suggestion.")
+                tail = text_range.Clone()
+                tail.MoveEndpointByRange(START, caret, END)
+                windows.select_paragraph(len(tail.GetText(MAX_SOURCE)), len(current.text))
             else:
                 raise EditorError("This editor could not select the suggestion. Use Copy.")
             if not selection_matches():
@@ -330,8 +346,26 @@ class Editor:
         focused = self._focus()
         if (not focused or focused[0].identity != target.identity or focused[0].window != target.window):
             raise EditorError("The focused field changed before paste. Use Copy.")
-        if not windows.clipboard_still_matches(owner, marker):
+        if marker is not None and not windows.clipboard_still_matches(owner, marker):
             raise EditorError("The clipboard changed before paste. Use Copy.")
         if windows.foreground() != target.window or windows.active_modifiers():
             raise EditorError("Return to the original editor and release any shortcut keys.")
-        windows.paste()
+        if direct_text:
+            windows.insert_text(replacement)
+        else:
+            windows.paste()
+        if current.scope == "paragraph":
+            # SendInput returning success confirms delivery only. Check what the editor retained.
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                focused = self._focus()
+                if not focused or focused[0].window != target.window or focused[0].identity != target.identity:
+                    break
+                caret = self._caret(element, text)
+                if caret:
+                    recent = _surrounding(caret, START, -len(replacement))
+                    normalize = lambda t: t.replace("\r\n", "\n").replace("\xa0", " ")
+                    if normalize(recent).endswith(normalize(replacement)):
+                        return
+                time.sleep(0.035)
+            raise EditorError("Could not confirm insertion. Check the draft before trying again.")

@@ -266,10 +266,12 @@ class WritingAssistant:
         self.pending_apply = "inline"
         self.hidden_word = self.word
         self.inline_notice = ""
+        overlay_had_focus = windows.foreground() == windows.own_window(self.overlay)
         self.overlay.withdraw()
-        if windows.process_id(windows.foreground()) == self.pid:
+        if overlay_had_focus:
             windows.restore_foreground(excerpt.target.window)
-        self.worker.submit("apply", token, excerpt, replacement, self.hwnd)
+        self.root.after(80 if overlay_had_focus else 0,
+                        lambda: self.worker.submit("apply", token, excerpt, replacement, self.hwnd))
 
     def auto_more(self):
         if self.auto_result and not self.auto_busy:
