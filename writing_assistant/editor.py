@@ -277,15 +277,25 @@ class Editor:
             raise EditorError("The original text field is no longer focused. Use Copy to keep the rewrite.")
         target, element = focus
         value, text = self._patterns(element)
+        whole_draft = False
         if original.scope == "paragraph":
             current, text_range = self.paragraph()
+            # Browser caret and DocumentRange providers can expose different end
+            # positions for the same draft. Whole-field equality is unambiguous.
+            if text and element.CurrentControlType == EDIT:
+                document = text.DocumentRange
+                whole_draft = (self._editable(value, document)
+                               and self._document_selection_allowed(document)
+                               and document.GetText(len(original.text) + 1) == original.text)
+                if whole_draft and current is None:
+                    current, text_range = original, document
         elif original.scope == "word":
             current, text_range = self._word(target, element, value, text)
         else:
             current, text_range = self._excerpt(target, element, value, text)
         if not self._matches(original, current):
             raise EditorError("The original text or selection changed. Capture it again or use Copy.")
-        if original_range and text_range and not original_range.Compare(text_range):
+        if not whole_draft and original_range and text_range and not original_range.Compare(text_range):
             raise EditorError("The caret or selection moved. Capture it again or use Copy.")
         if windows.foreground() != target.window or windows.active_modifiers():
             raise EditorError("Return to the original editor and release any shortcut keys.")
@@ -302,10 +312,12 @@ class Editor:
             deadline = time.monotonic() + 0.45
             while windows.foreground() == target.window:
                 selected = self._selection(text)
-                if (selected and selected.CompareEndpoints(START, text_range, START) == 0
-                        and selected.CompareEndpoints(END, text_range, END) == 0
-                        and selected.GetText(len(current.text) + 1) == current.text):
-                    return True
+                if selected and selected.GetText(len(current.text) + 1) == current.text:
+                    if whole_draft and text.DocumentRange.GetText(len(current.text) + 1) == current.text:
+                        return True
+                    if (selected.CompareEndpoints(START, text_range, START) == 0
+                            and selected.CompareEndpoints(END, text_range, END) == 0):
+                        return True
                 if time.monotonic() >= deadline:
                     break
                 time.sleep(0.025)
