@@ -219,9 +219,9 @@ def copy_text(owner, text):
         for format_id in formats:
             _clipboard_data(format_id, bytes(4))
         _clipboard_data(13, data)  # CF_UNICODETEXT
+        return clipboard_sequence()
     finally:
         close_clipboard()
-    return clipboard_sequence()
 
 
 def paste():

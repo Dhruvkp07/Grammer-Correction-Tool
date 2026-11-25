@@ -1,4 +1,7 @@
+import json
+import subprocess
 import sys
+import time
 import tempfile
 import unittest
 from pathlib import Path
@@ -38,3 +41,81 @@ class WindowsTests(unittest.TestCase):
         spelling = Spelling()
         self.assertEqual(spelling.suggest("writng", True), "writing")
         self.assertIsNone(spelling.suggest("writing", True))
+
+
+    def test_cross_process_native_edit_and_password(self):
+        import tkinter as tk
+        from writing_assistant import windows
+        from writing_assistant.worker import EditorWorker
+
+        root = tk.Tk()
+        root.withdraw()
+        root.update_idletasks()
+        self.addCleanup(root.destroy)
+        owner = windows.own_window(root)
+        fixture = subprocess.Popen(
+            [sys.executable, "-m", "tests.windows_fixture"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+        )
+        self.addCleanup(fixture.stdout.close)
+
+        def cleanup():
+            fixture.stdin.close()
+            try:
+                fixture.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                fixture.kill()
+                fixture.wait()
+
+        self.addCleanup(cleanup)
+        hwnd = json.loads(fixture.stdout.readline())
+
+        def control(value):
+            fixture.stdin.write(f"{value}\n")
+            fixture.stdin.flush()
+            return json.loads(fixture.stdout.readline())
+
+        worker = EditorWorker()
+
+        def request(name, *args):
+            worker.submit(name, *args)
+            action, error, result = worker.results.get(timeout=25)
+            self.assertEqual(action, name, error)
+            return error, result
+
+        if not control(0):
+            self.skipTest("Windows runner did not grant foreground access to the fixture")
+        error, result = request("probe", True)
+        self.assertEqual(error, "")
+        _, word, candidate = result
+        if word is not None:
+            self.assertEqual((word.text, candidate), ("writng", "writing"))
+
+        error, result = request("capture", 1, hwnd)
+        self.assertEqual(error, "")
+        _, excerpt = result
+        self.assertEqual((excerpt.scope, excerpt.text), ("field", "I am writng now."))
+        error, _ = request("apply", 1, excerpt, "I am writing now.", owner)
+        self.assertEqual(error, "")
+        self.assertEqual(control(3), "I am writing now.")
+
+        self.assertTrue(control(1))
+        error, result = request("capture", 2, hwnd)
+        self.assertEqual(error, "")
+        _, excerpt = result
+        self.assertEqual((excerpt.scope, excerpt.text), ("selection", "writng"))
+        error, _ = request("apply", 2, excerpt, "writing", owner)
+        self.assertEqual(error, "")
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            if control(3) == "I am writing now.":
+                break
+            time.sleep(0.05)
+        self.assertEqual(control(3), "I am writing now.")
+
+        self.assertTrue(control(2))
+        error, result = request("probe", True)
+        self.assertEqual((error, result), ("", (None, None, None)))
+        error, result = request("capture", 3, hwnd)
+        self.assertTrue(error)
+        self.assertIsNone(result)
