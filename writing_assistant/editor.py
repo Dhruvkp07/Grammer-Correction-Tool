@@ -289,13 +289,12 @@ class Editor:
             raise EditorError("The caret or selection moved. Capture it again or use Copy.")
         if windows.foreground() != target.window or windows.active_modifiers():
             raise EditorError("Return to the original editor and release any shortcut keys.")
-        direct_text = current.scope == "paragraph" and all(ord(ch) >= 32 for ch in replacement)
         if current.scope == "field" and value:
             value.SetValue(replacement)
             return
         if not text_range or not text:
             raise EditorError("This editor cannot apply the replacement. Use Copy.")
-        marker = None if direct_text else windows.copy_text(owner, replacement)
+        marker = windows.copy_text(owner, replacement)
         focused = self._focus()
         if not focused or focused[0].identity != target.identity or focused[0].window != target.window:
             raise EditorError("The active field changed. The replacement is available on the clipboard.")
@@ -346,26 +345,39 @@ class Editor:
         focused = self._focus()
         if (not focused or focused[0].identity != target.identity or focused[0].window != target.window):
             raise EditorError("The focused field changed before paste. Use Copy.")
-        if marker is not None and not windows.clipboard_still_matches(owner, marker):
+        if not windows.clipboard_still_matches(owner, marker):
             raise EditorError("The clipboard changed before paste. Use Copy.")
         if windows.foreground() != target.window or windows.active_modifiers():
             raise EditorError("Return to the original editor and release any shortcut keys.")
-        if direct_text:
-            windows.insert_text(replacement)
-        else:
-            windows.paste()
-        if current.scope == "paragraph":
-            # SendInput returning success confirms delivery only. Check what the editor retained.
-            deadline = time.monotonic() + 2
-            while time.monotonic() < deadline:
-                focused = self._focus()
-                if not focused or focused[0].window != target.window or focused[0].identity != target.identity:
-                    break
+        windows.paste()
+        if current.scope != "paragraph":
+            return
+
+        def still_in_editor():
+            focus = self._focus()
+            return focus and focus[0].window == target.window and focus[0].identity == target.identity
+
+        def normalized(value):
+            return value.replace("\r\n", "\n").replace("\xa0", " ")
+
+        def inserted(timeout):
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline and still_in_editor():
                 caret = self._caret(element, text)
                 if caret:
                     recent = _surrounding(caret, START, -len(replacement))
-                    normalize = lambda t: t.replace("\r\n", "\n").replace("\xa0", " ")
-                    if normalize(recent).endswith(normalize(replacement)):
-                        return
-                time.sleep(0.035)
-            raise EditorError("Could not confirm insertion. Check the draft before trying again.")
+                    if normalized(recent).endswith(normalized(replacement)):
+                        return True
+                time.sleep(0.04)
+            return False
+
+        if inserted(1.0):
+            return
+        # Some chat editors cancel paste. Retry by typing only while the exact
+        # original draft is still selected, to avoid duplicating a late paste.
+        if (all(ord(ch) >= 32 for ch in replacement) and still_in_editor()
+                and selection_matches() and still_in_editor() and not windows.active_modifiers()):
+            windows.insert_text(replacement)
+            if inserted(2.0):
+                return
+        raise EditorError("Could not confirm insertion. The rewrite is on your clipboard.")
